@@ -4,6 +4,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+pause_before_exit() {
+  if [[ -t 0 && -t 1 && "${NO_PAUSE:-0}" != "1" ]]; then
+    echo
+    read -r -p "[INFO] Press Enter to close this window..." _
+  fi
+}
+
+trap pause_before_exit EXIT
+
 echo "[INFO] Starting Media_webcam launcher..."
 
 auto_install_node() {
@@ -37,6 +46,7 @@ auto_install_node() {
   exit 1
 }
 
+echo "[INFO] Checking if npm is installed..."
 if ! command -v npm >/dev/null 2>&1; then
   echo "[WARN] npm is not installed."
   auto_install_node
@@ -48,5 +58,6 @@ echo "[INFO] npm version: $(npm -v)"
 echo "[INFO] Installing project dependencies..."
 npm install
 
-echo "[INFO] Launching server with npm start..."
+echo "[INFO] Starting project server..."
+echo "[INFO] Keep this window open. It will show dashboard and phone links."
 npm start

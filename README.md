@@ -6,6 +6,7 @@ This app lets you use your phone camera + microphone and watch it live on your l
 
 ### Windows
 - Double-click `run_dashboard.bat`
+- It opens a persistent terminal window and keeps it open.
 - It will:
   1) check if npm exists,
   2) try to install Node.js/npm via `winget` if missing,
@@ -14,6 +15,7 @@ This app lets you use your phone camera + microphone and watch it live on your l
 
 ### Mac / Linux
 - Double-click `run_dashboard.sh` (or run it from terminal)
+- It keeps the window open when the script exits, so errors are visible.
 - It will:
   1) check if npm exists,
   2) try to install Node.js/npm (apt/dnf/pacman/brew),
