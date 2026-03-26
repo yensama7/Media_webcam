@@ -7,18 +7,22 @@
 body { background:#111; color:white; font-family:sans-serif; margin: 0; }
 h2 { padding:10px; margin: 0; }
 #info { padding: 0 10px 10px; color: #ddd; }
-.controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; align-items: center; }
 .ipBox { background: #1d1d1d; border-radius: 8px; padding: 8px; margin-top: 6px; }
 .ip { font-family: monospace; color: #00ff88; margin-right: 10px; }
 #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; padding:10px; }
 .card { background:#222; border-radius:10px; padding:8px; display: flex; flex-direction: column; gap: 8px; }
 .card video { width:100%; border-radius:6px; background: #000; }
+.card video.enhanced {
+  filter: contrast(1.08) saturate(1.1) brightness(1.03);
+}
 .card.active { outline:3px solid #00ff88; }
 .card .meta { display:flex; justify-content:space-between; align-items:center; font-size:0.95rem; }
 button { border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
 .toggle { background: #0b7; color: #fff; }
 .talkAll { background: #1f6feb; color: #fff; }
 .talkOne { background: #7f3fbf; color: #fff; }
+label { font-size: 0.9rem; }
 </style>
 </head>
 <body>
@@ -29,6 +33,10 @@ button { border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
   <div id="ipList" class="ipBox">Loading laptop IP...</div>
   <div class="controls">
     <button id="talkAllBtn" class="talkAll">Hold to Talk to All Phones</button>
+    <label>
+      <input id="enhanceToggle" type="checkbox" checked>
+      Enhance dashboard video (local only)
+    </label>
   </div>
 </div>
 <div id="grid"></div>
@@ -41,6 +49,7 @@ const ws = new WebSocket(`${wsProtocol}://${location.host}`);
 const grid = document.getElementById("grid");
 const ipListEl = document.getElementById("ipList");
 const talkAllBtn = document.getElementById("talkAllBtn");
+const enhanceToggle = document.getElementById("enhanceToggle");
 
 const peers = new Map();
 const cardsByDeviceId = new Map();
@@ -64,6 +73,8 @@ ws.onmessage = async (event) => {
   }
 };
 
+enhanceToggle.addEventListener("change", applyEnhancementToAllVideos);
+
 loadServerInfo();
 bindTalkAllButton();
 
@@ -83,6 +94,14 @@ async function loadServerInfo() {
   } catch {
     ipListEl.textContent = "Could not load server IP list. Please refresh.";
   }
+}
+
+function applyEnhancement(videoEl) {
+  videoEl.classList.toggle("enhanced", enhanceToggle.checked);
+}
+
+function applyEnhancementToAllVideos() {
+  cardsByDeviceId.forEach(({ video }) => applyEnhancement(video));
 }
 
 function updateDevices(list) {
@@ -124,6 +143,7 @@ function updateDevices(list) {
       video.playsInline = true;
       video.controls = false;
       video.muted = true;
+      applyEnhancement(video);
 
       toggle.onclick = (evt) => {
         evt.stopPropagation();
