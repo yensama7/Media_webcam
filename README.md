@@ -37,6 +37,7 @@ The feed should appear automatically on dashboard without refreshing.
 ## Talk back from dashboard (walkie-talkie style)
 - **Hold to Talk to All Phones**: press and hold to broadcast your laptop microphone to every phone.
 - **Hold to Talk** (inside a camera card): press and hold to talk to that phone only.
+- Talkback now uses the same WebRTC connection for lower delay and better reliability.
 - When you release the button, talking stops.
 
 ## Phone connection quality badge

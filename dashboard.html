@@ -46,7 +46,6 @@ const peers = new Map();
 const cardsByDeviceId = new Map();
 let activeId = null;
 let dashboardMicStream = null;
-let activeRecorder = null;
 
 ws.onopen = () => {
   ws.send(JSON.stringify({ type: "dashboard" }));
@@ -144,7 +143,7 @@ function updateDevices(list) {
     }
 
     const peerEntry = peers.get(d.id);
-    if (!peerEntry || !peerEntry.pc || peerEntry.pc.connectionState !== "connected") {
+    if (!peerEntry || !peerEntry.pc || (peerEntry.pc.connectionState !== "connected" && peerEntry.pc.connectionState !== "connecting")) {
       ws.send(JSON.stringify({ type: "watch", deviceId: d.id }));
     }
   });
@@ -174,7 +173,7 @@ function buildPeer(deviceSocketId, deviceId) {
   };
 
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") {
+    if (pc.connectionState === "failed" || pc.connectionState === "closed") {
       peers.delete(deviceId);
       const entry = cardsByDeviceId.get(deviceId);
       if (entry) entry.pc = null;
@@ -182,9 +181,10 @@ function buildPeer(deviceSocketId, deviceId) {
     }
   };
 
-  const entry = cardsByDeviceId.get(deviceId);
-  if (entry) entry.pc = pc;
-  peers.set(deviceId, { pc, deviceSocketId });
+  const entry = peers.get(deviceId) || {};
+  peers.set(deviceId, { ...entry, pc, deviceSocketId, talkSender: entry.talkSender || null });
+  const cardEntry = cardsByDeviceId.get(deviceId);
+  if (cardEntry) cardEntry.pc = pc;
   return pc;
 }
 
@@ -204,12 +204,12 @@ async function handleSignal(deviceSocketId, deviceId, data) {
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    ws.send(JSON.stringify({
-      type: "signal",
-      to: deviceSocketId,
-      deviceId,
-      data: { type: "answer", sdp: answer.sdp }
-    }));
+    ws.send(JSON.stringify({ type: "signal", to: deviceSocketId, deviceId, data: { type: "answer", sdp: answer.sdp } }));
+    return;
+  }
+
+  if (data.type === "answer") {
+    await pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
     return;
   }
 
@@ -225,10 +225,12 @@ function bindTalkAllButton() {
 function bindPushToTalk(button, target) {
   const start = async (evt) => {
     evt.preventDefault();
-    await startTalking(target, button);
+    await setTalkState(target, true, button);
   };
 
-  const stop = () => stopTalking(button);
+  const stop = async () => {
+    await setTalkState(target, false, button);
+  };
 
   button.addEventListener("mousedown", start);
   button.addEventListener("touchstart", start, { passive: false });
@@ -240,43 +242,43 @@ function bindPushToTalk(button, target) {
 async function ensureDashboardMic() {
   if (dashboardMicStream) return dashboardMicStream;
   dashboardMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  dashboardMicStream.getAudioTracks().forEach((t) => { t.enabled = false; });
   return dashboardMicStream;
 }
 
-async function startTalking(target, button) {
-  if (activeRecorder) return;
+async function ensureTalkSenderForDevice(deviceId) {
+  const peerEntry = peers.get(deviceId);
+  if (!peerEntry || !peerEntry.pc) return null;
+
+  if (peerEntry.talkSender) return peerEntry.talkSender;
 
   const stream = await ensureDashboardMic();
-  const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-    ? "audio/webm;codecs=opus"
-    : "audio/webm";
+  const [micTrack] = stream.getAudioTracks();
+  if (!micTrack) return null;
 
-  const recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 48000 });
-  activeRecorder = recorder;
-  button.textContent = target === "all" ? "Talking to All..." : "Talking...";
+  const sender = peerEntry.pc.addTrack(micTrack, stream);
+  sender.track.enabled = false;
+  peers.set(deviceId, { ...peerEntry, talkSender: sender });
 
-  recorder.ondataavailable = async (evt) => {
-    if (!evt.data || evt.data.size === 0) return;
-    const buffer = await evt.data.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    bytes.forEach((b) => { binary += String.fromCharCode(b); });
-    const base64 = btoa(binary);
+  const offer = await peerEntry.pc.createOffer();
+  await peerEntry.pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({ type: "signal", to: peerEntry.deviceSocketId, deviceId, data: { type: "offer", sdp: offer.sdp } }));
 
-    ws.send(JSON.stringify({ type: "talk", target, mimeType, data: base64 }));
-  };
-
-  recorder.start(120);
+  return sender;
 }
 
-function stopTalking(button) {
-  if (!activeRecorder) return;
-  activeRecorder.stop();
-  activeRecorder = null;
-  if (button === talkAllBtn) {
-    button.textContent = "Hold to Talk to All Phones";
+async function setTalkState(target, enabled, button) {
+  const targets = target === "all" ? Array.from(peers.keys()) : [target];
+
+  await Promise.all(targets.map(async (deviceId) => {
+    const sender = await ensureTalkSenderForDevice(deviceId);
+    if (sender && sender.track) sender.track.enabled = enabled;
+  }));
+
+  if (target === "all") {
+    button.textContent = enabled ? "Talking to All..." : "Hold to Talk to All Phones";
   } else {
-    button.textContent = "Hold to Talk";
+    button.textContent = enabled ? "Talking..." : "Hold to Talk";
   }
 }
 </script>

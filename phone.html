@@ -29,8 +29,7 @@
 
   const peers = new Map();
   const pendingWatchers = [];
-  const talkQueue = [];
-  let isPlayingTalk = false;
+  const talkAudioEls = new Map();
   let localStream;
   const cameraReadyPromise = startCamera();
 
@@ -55,11 +54,6 @@
 
     if (msg.type === "signal") {
       await handleSignal(msg.from, msg.data);
-      return;
-    }
-
-    if (msg.type === "talk") {
-      queueTalkAudio(msg.mimeType, msg.data);
     }
   };
 
@@ -68,14 +62,14 @@
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: {
         facingMode: "environment",
-        width: { ideal: 1280, max: 1920 },
-        height: { ideal: 720, max: 1080 },
-        frameRate: { ideal: 30, max: 30 }
+        width: { ideal: 1280, max: 1280 },
+        height: { ideal: 720, max: 720 },
+        frameRate: { ideal: 24, max: 24 }
       }
     });
 
     const [videoTrack] = localStream.getVideoTracks();
-    if (videoTrack) videoTrack.contentHint = "detail";
+    if (videoTrack) videoTrack.contentHint = "motion";
 
     video.srcObject = localStream;
     statusEl.textContent = "Camera and microphone ready";
@@ -97,24 +91,32 @@
       const sender = pc.addTrack(track, localStream);
       if (track.kind === "video") {
         const params = sender.getParameters();
-        params.degradationPreference = "maintain-resolution";
-        params.encodings = [{ maxBitrate: 2500000 }];
+        params.degradationPreference = "balanced";
+        params.encodings = [{ maxBitrate: 1200000, maxFramerate: 24 }];
         sender.setParameters(params).catch(() => {});
       }
     });
 
+    pc.ontrack = (evt) => {
+      if (evt.track.kind !== "audio") return;
+      let talkAudio = talkAudioEls.get(remoteSocketId);
+      if (!talkAudio) {
+        talkAudio = document.createElement("audio");
+        talkAudio.autoplay = true;
+        talkAudio.playsInline = true;
+        talkAudioEls.set(remoteSocketId, talkAudio);
+      }
+      talkAudio.srcObject = evt.streams[0];
+      talkAudio.play().catch(() => {});
+    };
+
     pc.onicecandidate = (evt) => {
       if (!evt.candidate) return;
-      ws.send(JSON.stringify({
-        type: "signal",
-        to: remoteSocketId,
-        deviceId,
-        data: { type: "candidate", candidate: evt.candidate }
-      }));
+      ws.send(JSON.stringify({ type: "signal", to: remoteSocketId, deviceId, data: { type: "candidate", candidate: evt.candidate } }));
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") {
+      if (pc.connectionState === "failed" || pc.connectionState === "closed") {
         pc.close();
         peers.delete(remoteSocketId);
       }
@@ -138,6 +140,14 @@
     await cameraReadyPromise;
     let pc = peers.get(remoteSocketId);
     if (!pc) pc = buildPeer(remoteSocketId);
+
+    if (data.type === "offer") {
+      await pc.setRemoteDescription({ type: "offer", sdp: data.sdp });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({ type: "signal", to: remoteSocketId, deviceId, data: { type: "answer", sdp: answer.sdp } }));
+      return;
+    }
 
     if (data.type === "answer") {
       await pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
@@ -186,35 +196,6 @@
       netBadgeEl.textContent = "Link: stats unavailable";
       netBadgeEl.style.background = "#444";
     }
-  }
-
-  function queueTalkAudio(mimeType, base64Data) {
-    talkQueue.push({ mimeType, base64Data });
-    if (!isPlayingTalk) playNextTalkAudio();
-  }
-
-  function b64ToBlob(base64Data, mimeType) {
-    const binary = atob(base64Data);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    return new Blob([bytes], { type: mimeType || "audio/webm" });
-  }
-
-  function playNextTalkAudio() {
-    if (talkQueue.length === 0) {
-      isPlayingTalk = false;
-      return;
-    }
-
-    isPlayingTalk = true;
-    const item = talkQueue.shift();
-    const audio = new Audio(URL.createObjectURL(b64ToBlob(item.base64Data, item.mimeType)));
-    audio.onended = () => {
-      URL.revokeObjectURL(audio.src);
-      playNextTalkAudio();
-    };
-    audio.onerror = () => playNextTalkAudio();
-    audio.play().catch(() => playNextTalkAudio());
   }
 
   setInterval(refreshNetworkBadge, 1000);
