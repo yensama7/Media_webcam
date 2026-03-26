@@ -4,70 +4,343 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Camera Dashboard</title>
 <style>
-body { background:#111; color:white; font-family:sans-serif; }
-#grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; padding:10px; }
-.card { background:#222; border-radius:10px; padding:8px; }
-.card img { width:100%; border-radius:6px; }
+body { background:#111; color:white; font-family:sans-serif; margin: 0; }
+h2 { padding:10px; margin: 0; }
+#info { padding: 0 10px 10px; color: #ddd; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; align-items: center; }
+.ipBox { background: #1d1d1d; border-radius: 8px; padding: 8px; margin-top: 6px; }
+.ip { font-family: monospace; color: #00ff88; margin-right: 10px; }
+#grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:10px; padding:10px; }
+.card { background:#222; border-radius:10px; padding:8px; display: flex; flex-direction: column; gap: 8px; }
+.viewer { width: 100%; aspect-ratio: 16 / 9; border-radius:6px; background: #000; position: relative; overflow: hidden; }
+.viewer video { width:100%; height:100%; object-fit: cover; transform-origin: center center; }
+.viewer video.rotated-landscape { transform: rotate(90deg) scale(1.78); }
+.viewer video.enhanced { filter: contrast(1.08) saturate(1.1) brightness(1.03); }
+.placeholder {
+  position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  flex-direction: column; text-align: center; background:#202020; color:#fff; padding: 12px;
+}
+.placeholder .title { font-size: 1.25rem; font-weight: 700; }
+.placeholder .subtitle { opacity: 0.9; font-style: italic; margin-top: 6px; }
 .card.active { outline:3px solid #00ff88; }
+.card .meta { display:flex; justify-content:space-between; align-items:center; font-size:0.95rem; }
+button { border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+.toggle { background: #0b7; color: #fff; }
+.talkAll { background: #1f6feb; color: #fff; }
+.talkOne { background: #7f3fbf; color: #fff; }
+label { font-size: 0.9rem; }
 </style>
 </head>
 <body>
 
-<h2 style="padding:10px;">Camera Dashboard</h2>
+<h2>Camera Dashboard (Max 5 phones)</h2>
+<div id="info">
+  On your phone browser, open one of these links:
+  <div id="ipList" class="ipBox">Loading laptop IP...</div>
+  <div class="controls">
+    <button id="talkAllBtn" class="talkAll">Hold to Talk to All Phones</button>
+    <label><input id="enhanceToggle" type="checkbox" checked> Enhance dashboard video (local only)</label>
+  </div>
+</div>
 <div id="grid"></div>
 
 <script>
-const laptopIP = prompt("Enter laptop IP");
-const ws = new WebSocket(`ws://${laptopIP}:8080`);
+const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+const httpProtocol = location.protocol === "https:" ? "https" : "http";
+const ws = new WebSocket(`${wsProtocol}://${location.host}`);
 
 const grid = document.getElementById("grid");
+const ipListEl = document.getElementById("ipList");
+const talkAllBtn = document.getElementById("talkAllBtn");
+const enhanceToggle = document.getElementById("enhanceToggle");
 
-let devices = {};
+const peers = new Map();
+const cardsByDeviceId = new Map();
+const reconnectTimers = new Map();
 let activeId = null;
+let dashboardMicStream = null;
 
-ws.onopen = () => {
-  ws.send(JSON.stringify({ type: "dashboard" }));
-};
+ws.onopen = () => ws.send(JSON.stringify({ type: "dashboard" }));
 
-ws.onmessage = (event) => {
+ws.onmessage = async (event) => {
   const msg = JSON.parse(event.data);
 
-  // 📋 device list
   if (msg.type === "devices") {
     updateDevices(msg.devices);
+    return;
   }
 
-  // 🎥 incoming frame
-  if (msg.type === "frame") {
-    const img = document.getElementById("img-" + msg.id);
-    if (img) img.src = msg.data;
+  if (msg.type === "signal") {
+    await handleSignal(msg.from, msg.deviceId, msg.data);
   }
 };
 
+enhanceToggle.addEventListener("change", applyEnhancementToAllVideos);
+loadServerInfo();
+bindTalkAllButton();
+
+async function loadServerInfo() {
+  try {
+    const resp = await fetch("/api/server-info");
+    const info = await resp.json();
+    if (!info.ips || info.ips.length === 0) {
+      ipListEl.textContent = "Could not detect LAN IP automatically. Use your laptop IP + :8080/phone";
+      return;
+    }
+    ipListEl.innerHTML = info.ips.map((ip) => `<span class=\"ip\">${httpProtocol}://${ip}:${info.port}/phone</span>`).join("<br>");
+  } catch {
+    ipListEl.textContent = "Could not load server IP list. Please refresh.";
+  }
+}
+
+function applyEnhancement(videoEl) {
+  videoEl.classList.toggle("enhanced", enhanceToggle.checked);
+}
+
+function applyEnhancementToAllVideos() {
+  cardsByDeviceId.forEach(({ video }) => applyEnhancement(video));
+}
+
+function showLogoPlaceholder(entry, text = "Reconnecting...") {
+  entry.placeholder.style.display = "flex";
+  entry.placeholderStatus.textContent = text;
+}
+
+function hideLogoPlaceholder(entry) {
+  entry.placeholder.style.display = "none";
+}
+
+function startReconnectWindow(deviceId) {
+  if (reconnectTimers.has(deviceId)) return;
+  const entry = cardsByDeviceId.get(deviceId);
+  if (!entry) return;
+
+  showLogoPlaceholder(entry, "Reconnecting... up to 60s");
+
+  const watchInterval = setInterval(() => {
+    ws.send(JSON.stringify({ type: "watch", deviceId }));
+  }, 5000);
+
+  const hardTimeout = setTimeout(() => {
+    clearInterval(watchInterval);
+    reconnectTimers.delete(deviceId);
+    if (cardsByDeviceId.has(deviceId)) {
+      cardsByDeviceId.get(deviceId).card.remove();
+      cardsByDeviceId.delete(deviceId);
+      peers.delete(deviceId);
+    }
+  }, 60000);
+
+  reconnectTimers.set(deviceId, { watchInterval, hardTimeout });
+}
+
+function clearReconnectWindow(deviceId) {
+  const t = reconnectTimers.get(deviceId);
+  if (!t) return;
+  clearInterval(t.watchInterval);
+  clearTimeout(t.hardTimeout);
+  reconnectTimers.delete(deviceId);
+}
+
 function updateDevices(list) {
-  grid.innerHTML = "";
-  devices = {};
+  const seen = new Set(list.map((d) => d.id));
 
-  list.forEach(d => {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.onclick = () => setActive(d.id);
+  cardsByDeviceId.forEach((entry, id) => {
+    if (!seen.has(id)) {
+      startReconnectWindow(id);
+    }
+  });
 
-    card.innerHTML = `
-      <div>${d.name}</div>
-      <img id="img-${d.id}" />
-    `;
+  list.forEach((d) => {
+    if (!cardsByDeviceId.has(d.id)) {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.onclick = () => setActive(d.id);
 
-    grid.appendChild(card);
-    devices[d.id] = card;
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const title = document.createElement("div");
+      title.textContent = d.name;
+      const toggle = document.createElement("button");
+      toggle.className = "toggle";
+      toggle.textContent = "Unmute";
+
+      const talkOne = document.createElement("button");
+      talkOne.className = "talkOne";
+      talkOne.textContent = "Hold to Talk";
+      bindPushToTalk(talkOne, d.id);
+
+      const viewer = document.createElement("div");
+      viewer.className = "viewer";
+
+      const video = document.createElement("video");
+      video.id = `video-${d.id}`;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.controls = false;
+      video.muted = true;
+      applyEnhancement(video);
+
+      const placeholder = document.createElement("div");
+      placeholder.className = "placeholder";
+      placeholder.innerHTML = '<div class="title">AFIT CHRISTIAN CHAPEL, KADUNA</div><div class="subtitle">Promoting the Unity of the Saints</div><div id="status"></div>';
+      const placeholderStatus = placeholder.querySelector("#status");
+
+      toggle.onclick = (evt) => {
+        evt.stopPropagation();
+        const shouldUnmute = video.muted;
+        video.muted = !shouldUnmute;
+        toggle.textContent = shouldUnmute ? "Mute" : "Unmute";
+      };
+
+      meta.appendChild(title);
+      meta.appendChild(toggle);
+      viewer.appendChild(video);
+      viewer.appendChild(placeholder);
+      card.appendChild(meta);
+      card.appendChild(viewer);
+      card.appendChild(talkOne);
+      grid.appendChild(card);
+
+      cardsByDeviceId.set(d.id, { card, video, pc: null, placeholder, placeholderStatus });
+    }
+
+    clearReconnectWindow(d.id);
+    hideLogoPlaceholder(cardsByDeviceId.get(d.id));
+
+    const peerEntry = peers.get(d.id);
+    if (!peerEntry || !peerEntry.pc || (peerEntry.pc.connectionState !== "connected" && peerEntry.pc.connectionState !== "connecting")) {
+      ws.send(JSON.stringify({ type: "watch", deviceId: d.id }));
+    }
   });
 }
 
 function setActive(id) {
   activeId = id;
+  cardsByDeviceId.forEach((entry, key) => entry.card.classList.toggle("active", key === activeId));
+}
 
-  Object.values(devices).forEach(c => c.classList.remove("active"));
-  if (devices[id]) devices[id].classList.add("active");
+function updateLandscapeClass(videoEl) {
+  if (!videoEl.videoWidth || !videoEl.videoHeight) return;
+  const isPortraitFeed = videoEl.videoHeight > videoEl.videoWidth;
+  videoEl.classList.toggle("rotated-landscape", isPortraitFeed);
+}
+
+function buildPeer(deviceSocketId, deviceId) {
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+  pc.ontrack = (evt) => {
+    const entry = cardsByDeviceId.get(deviceId);
+    if (!entry) return;
+    const [stream] = evt.streams;
+    if (entry.video.srcObject !== stream) entry.video.srcObject = stream;
+    entry.video.play().catch(() => {});
+    updateLandscapeClass(entry.video);
+    entry.video.onloadedmetadata = () => updateLandscapeClass(entry.video);
+    hideLogoPlaceholder(entry);
+    clearReconnectWindow(deviceId);
+  };
+
+  pc.onicecandidate = (evt) => {
+    if (!evt.candidate) return;
+    ws.send(JSON.stringify({ type: "signal", to: deviceSocketId, deviceId, data: { type: "candidate", candidate: evt.candidate } }));
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") {
+      const entry = cardsByDeviceId.get(deviceId);
+      if (entry) showLogoPlaceholder(entry, "Reconnecting... up to 60s");
+      startReconnectWindow(deviceId);
+    }
+  };
+
+  const existing = peers.get(deviceId) || {};
+  peers.set(deviceId, { ...existing, pc, deviceSocketId, talkSender: existing.talkSender || null });
+  const cardEntry = cardsByDeviceId.get(deviceId);
+  if (cardEntry) cardEntry.pc = pc;
+  return pc;
+}
+
+async function handleSignal(deviceSocketId, deviceId, data) {
+  if (!deviceId) return;
+
+  let peerEntry = peers.get(deviceId);
+  let pc = peerEntry?.pc;
+
+  if (!pc) {
+    pc = buildPeer(deviceSocketId, deviceId);
+    peerEntry = peers.get(deviceId);
+  }
+
+  if (data.type === "offer") {
+    await pc.setRemoteDescription({ type: "offer", sdp: data.sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    ws.send(JSON.stringify({ type: "signal", to: deviceSocketId, deviceId, data: { type: "answer", sdp: answer.sdp } }));
+    return;
+  }
+
+  if (data.type === "answer") {
+    await pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
+    return;
+  }
+
+  if (data.type === "candidate" && data.candidate) {
+    await pc.addIceCandidate(data.candidate);
+  }
+}
+
+function bindTalkAllButton() { bindPushToTalk(talkAllBtn, "all"); }
+
+function bindPushToTalk(button, target) {
+  const start = async (evt) => { evt.preventDefault(); await setTalkState(target, true, button); };
+  const stop = async () => { await setTalkState(target, false, button); };
+
+  button.addEventListener("mousedown", start);
+  button.addEventListener("touchstart", start, { passive: false });
+  button.addEventListener("mouseup", stop);
+  button.addEventListener("mouseleave", stop);
+  button.addEventListener("touchend", stop);
+}
+
+async function ensureDashboardMic() {
+  if (dashboardMicStream) return dashboardMicStream;
+  dashboardMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  dashboardMicStream.getAudioTracks().forEach((t) => { t.enabled = false; });
+  return dashboardMicStream;
+}
+
+async function ensureTalkSenderForDevice(deviceId) {
+  const peerEntry = peers.get(deviceId);
+  if (!peerEntry || !peerEntry.pc) return null;
+  if (peerEntry.talkSender) return peerEntry.talkSender;
+
+  const stream = await ensureDashboardMic();
+  const [micTrack] = stream.getAudioTracks();
+  if (!micTrack) return null;
+
+  const sender = peerEntry.pc.addTrack(micTrack, stream);
+  sender.track.enabled = false;
+  peers.set(deviceId, { ...peerEntry, talkSender: sender });
+
+  const offer = await peerEntry.pc.createOffer();
+  await peerEntry.pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({ type: "signal", to: peerEntry.deviceSocketId, deviceId, data: { type: "offer", sdp: offer.sdp } }));
+
+  return sender;
+}
+
+async function setTalkState(target, enabled, button) {
+  const targets = target === "all" ? Array.from(peers.keys()) : [target];
+
+  await Promise.all(targets.map(async (deviceId) => {
+    const sender = await ensureTalkSenderForDevice(deviceId);
+    if (sender && sender.track) sender.track.enabled = enabled;
+  }));
+
+  button.textContent = target === "all"
+    ? (enabled ? "Talking to All..." : "Hold to Talk to All Phones")
+    : (enabled ? "Talking..." : "Hold to Talk");
 }
 </script>
 
