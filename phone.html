@@ -5,7 +5,7 @@
   <title>Phone Camera</title>
   <style>
     body { background: #111; color: white; font-family: sans-serif; text-align: center; padding: 16px; }
-    video { width: 100%; max-width: 560px; border-radius: 8px; background: #000; }
+    video { width: 100%; max-width: 560px; border-radius: 8px; background: #000; aspect-ratio: 16 / 9; object-fit: cover; }
     #status { color: #00ff88; }
     .small { opacity: 0.8; font-size: 0.9rem; }
     #netBadge { position: fixed; top: 10px; right: 10px; padding: 8px 10px; border-radius: 8px; font-weight: 700; background: #444; color: #fff; font-size: 0.9rem; z-index: 9999; }
@@ -25,37 +25,62 @@
   const deviceId = crypto.randomUUID();
   const deviceName = "Phone-" + deviceId.slice(0, 4);
   const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${wsProtocol}://${location.host}`);
 
+  let ws;
+  let reconnectTimer;
   const peers = new Map();
   const pendingWatchers = [];
   const talkAudioEls = new Map();
   let localStream;
   const cameraReadyPromise = startCamera();
 
-  ws.onopen = () => {
-    statusEl.textContent = "Connected";
-    ws.send(JSON.stringify({ type: "register", id: deviceId, name: deviceName }));
-  };
+  connectWebSocket();
 
-  ws.onerror = () => {
-    statusEl.textContent = "Server connection failed";
-    statusEl.style.color = "red";
-  };
+  function connectWebSocket() {
+    ws = new WebSocket(`${wsProtocol}://${location.host}`);
 
-  ws.onmessage = async (event) => {
-    const msg = JSON.parse(event.data);
+    ws.onopen = () => {
+      statusEl.textContent = "Connected";
+      sendJson({ type: "register", id: deviceId, name: deviceName });
+    };
 
-    if (msg.type === "watch") {
-      pendingWatchers.push(msg.from);
-      await connectPendingWatchers();
-      return;
-    }
+    ws.onclose = () => {
+      statusEl.textContent = "Reconnecting...";
+      statusEl.style.color = "#ffaa00";
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connectWebSocket, 2000);
+    };
 
-    if (msg.type === "signal") {
-      await handleSignal(msg.from, msg.data);
-    }
-  };
+    ws.onerror = () => {
+      statusEl.textContent = "Server connection failed";
+      statusEl.style.color = "red";
+    };
+
+    ws.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === "limit") {
+        statusEl.textContent = msg.message;
+        statusEl.style.color = "red";
+        ws.close();
+        return;
+      }
+
+      if (msg.type === "watch") {
+        pendingWatchers.push(msg.from);
+        await connectPendingWatchers();
+        return;
+      }
+
+      if (msg.type === "signal") {
+        await handleSignal(msg.from, msg.data);
+      }
+    };
+  }
+
+  function sendJson(payload) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(payload));
+  }
 
   async function startCamera() {
     localStream = await navigator.mediaDevices.getUserMedia({
@@ -113,7 +138,7 @@
 
     pc.onicecandidate = (evt) => {
       if (!evt.candidate) return;
-      ws.send(JSON.stringify({ type: "signal", to: remoteSocketId, deviceId, data: { type: "candidate", candidate: evt.candidate } }));
+      sendJson({ type: "signal", to: remoteSocketId, deviceId, data: { type: "candidate", candidate: evt.candidate } });
     };
 
     pc.onconnectionstatechange = () => {
@@ -134,7 +159,7 @@
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    ws.send(JSON.stringify({ type: "signal", to: remoteSocketId, deviceId, data: { type: "offer", sdp: offer.sdp } }));
+    sendJson({ type: "signal", to: remoteSocketId, deviceId, data: { type: "offer", sdp: offer.sdp } });
   }
 
   async function handleSignal(remoteSocketId, data) {
@@ -146,7 +171,7 @@
       await pc.setRemoteDescription({ type: "offer", sdp: data.sdp });
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      ws.send(JSON.stringify({ type: "signal", to: remoteSocketId, deviceId, data: { type: "answer", sdp: answer.sdp } }));
+      sendJson({ type: "signal", to: remoteSocketId, deviceId, data: { type: "answer", sdp: answer.sdp } });
       return;
     }
 
@@ -177,7 +202,6 @@
     try {
       const stats = await peer.getStats();
       let rttMs = null;
-
       stats.forEach((report) => {
         if (report.type === "candidate-pair" && report.state === "succeeded" && report.currentRoundTripTime) {
           rttMs = Math.round(report.currentRoundTripTime * 1000);

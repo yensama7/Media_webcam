@@ -97,6 +97,20 @@ wss.on("connection", (ws) => {
       const msg = JSON.parse(rawData);
 
       if (msg.type === "register") {
+        const existingSocketId = findSocketIdByDeviceId(msg.id);
+
+        if (!existingSocketId && devicesBySocketId.size >= 5) {
+          sendJson(ws, { type: "limit", message: "Maximum of 5 phones can connect." });
+          ws.close();
+          return;
+        }
+
+        if (existingSocketId && existingSocketId !== socketId) {
+          const oldSocket = socketsById.get(existingSocketId);
+          devicesBySocketId.delete(existingSocketId);
+          if (oldSocket && oldSocket !== ws) oldSocket.close();
+        }
+
         devicesBySocketId.set(socketId, {
           socketId,
           deviceId: msg.id,
@@ -162,6 +176,13 @@ wss.on("connection", (ws) => {
     socketsById.delete(socketId);
   });
 });
+
+function findSocketIdByDeviceId(deviceId) {
+  for (const [socketId, device] of devicesBySocketId.entries()) {
+    if (device.deviceId === deviceId) return socketId;
+  }
+  return null;
+}
 
 function findDeviceSocketByDeviceId(deviceId) {
   for (const [socketId, device] of devicesBySocketId.entries()) {

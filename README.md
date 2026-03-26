@@ -43,6 +43,13 @@ Then open dashboard on laptop:
 
 The feed should appear automatically on dashboard without refreshing.
 
+
+## Connection limits and reconnect behavior
+- Maximum connected phones: **5** (extra phones are rejected to protect network stability).
+- If a feed drops, dashboard retries reconnect for up to **60 seconds**.
+- During retry, a branded AFIT placeholder panel is shown in that card.
+- If reconnect fails after 60 seconds, the card is removed automatically.
+
 ## Audio controls
 - Click **Unmute** on a camera card to hear phone audio.
 - Hold **Hold to Talk to All Phones** to broadcast dashboard mic to all phones.

@@ -10,12 +10,17 @@ h2 { padding:10px; margin: 0; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; align-items: center; }
 .ipBox { background: #1d1d1d; border-radius: 8px; padding: 8px; margin-top: 6px; }
 .ip { font-family: monospace; color: #00ff88; margin-right: 10px; }
-#grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; padding:10px; }
+#grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:10px; padding:10px; }
 .card { background:#222; border-radius:10px; padding:8px; display: flex; flex-direction: column; gap: 8px; }
-.card video { width:100%; border-radius:6px; background: #000; aspect-ratio: 16 / 9; object-fit: contain; }
-.card video.enhanced {
-  filter: contrast(1.08) saturate(1.1) brightness(1.03);
+.viewer { width: 100%; aspect-ratio: 16 / 9; border-radius:6px; background: #000; position: relative; overflow: hidden; }
+.viewer video { width:100%; height:100%; object-fit: cover; }
+.viewer video.enhanced { filter: contrast(1.08) saturate(1.1) brightness(1.03); }
+.placeholder {
+  position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  flex-direction: column; text-align: center; background:#202020; color:#fff; padding: 12px;
 }
+.placeholder .title { font-size: 1.25rem; font-weight: 700; }
+.placeholder .subtitle { opacity: 0.9; font-style: italic; margin-top: 6px; }
 .card.active { outline:3px solid #00ff88; }
 .card .meta { display:flex; justify-content:space-between; align-items:center; font-size:0.95rem; }
 button { border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
@@ -27,16 +32,13 @@ label { font-size: 0.9rem; }
 </head>
 <body>
 
-<h2>Camera Dashboard</h2>
+<h2>Camera Dashboard (Max 5 phones)</h2>
 <div id="info">
   On your phone browser, open one of these links:
   <div id="ipList" class="ipBox">Loading laptop IP...</div>
   <div class="controls">
     <button id="talkAllBtn" class="talkAll">Hold to Talk to All Phones</button>
-    <label>
-      <input id="enhanceToggle" type="checkbox" checked>
-      Enhance dashboard video (local only)
-    </label>
+    <label><input id="enhanceToggle" type="checkbox" checked> Enhance dashboard video (local only)</label>
   </div>
 </div>
 <div id="grid"></div>
@@ -53,12 +55,11 @@ const enhanceToggle = document.getElementById("enhanceToggle");
 
 const peers = new Map();
 const cardsByDeviceId = new Map();
+const reconnectTimers = new Map();
 let activeId = null;
 let dashboardMicStream = null;
 
-ws.onopen = () => {
-  ws.send(JSON.stringify({ type: "dashboard" }));
-};
+ws.onopen = () => ws.send(JSON.stringify({ type: "dashboard" }));
 
 ws.onmessage = async (event) => {
   const msg = JSON.parse(event.data);
@@ -74,7 +75,6 @@ ws.onmessage = async (event) => {
 };
 
 enhanceToggle.addEventListener("change", applyEnhancementToAllVideos);
-
 loadServerInfo();
 bindTalkAllButton();
 
@@ -82,15 +82,11 @@ async function loadServerInfo() {
   try {
     const resp = await fetch("/api/server-info");
     const info = await resp.json();
-
     if (!info.ips || info.ips.length === 0) {
       ipListEl.textContent = "Could not detect LAN IP automatically. Use your laptop IP + :8080/phone";
       return;
     }
-
-    ipListEl.innerHTML = info.ips
-      .map((ip) => `<span class=\"ip\">${httpProtocol}://${ip}:${info.port}/phone</span>`)
-      .join("<br>");
+    ipListEl.innerHTML = info.ips.map((ip) => `<span class=\"ip\">${httpProtocol}://${ip}:${info.port}/phone</span>`).join("<br>");
   } catch {
     ipListEl.textContent = "Could not load server IP list. Please refresh.";
   }
@@ -104,15 +100,53 @@ function applyEnhancementToAllVideos() {
   cardsByDeviceId.forEach(({ video }) => applyEnhancement(video));
 }
 
+function showLogoPlaceholder(entry, text = "Reconnecting...") {
+  entry.placeholder.style.display = "flex";
+  entry.placeholderStatus.textContent = text;
+}
+
+function hideLogoPlaceholder(entry) {
+  entry.placeholder.style.display = "none";
+}
+
+function startReconnectWindow(deviceId) {
+  if (reconnectTimers.has(deviceId)) return;
+  const entry = cardsByDeviceId.get(deviceId);
+  if (!entry) return;
+
+  showLogoPlaceholder(entry, "Reconnecting... up to 60s");
+
+  const watchInterval = setInterval(() => {
+    ws.send(JSON.stringify({ type: "watch", deviceId }));
+  }, 5000);
+
+  const hardTimeout = setTimeout(() => {
+    clearInterval(watchInterval);
+    reconnectTimers.delete(deviceId);
+    if (cardsByDeviceId.has(deviceId)) {
+      cardsByDeviceId.get(deviceId).card.remove();
+      cardsByDeviceId.delete(deviceId);
+      peers.delete(deviceId);
+    }
+  }, 60000);
+
+  reconnectTimers.set(deviceId, { watchInterval, hardTimeout });
+}
+
+function clearReconnectWindow(deviceId) {
+  const t = reconnectTimers.get(deviceId);
+  if (!t) return;
+  clearInterval(t.watchInterval);
+  clearTimeout(t.hardTimeout);
+  reconnectTimers.delete(deviceId);
+}
+
 function updateDevices(list) {
   const seen = new Set(list.map((d) => d.id));
 
   cardsByDeviceId.forEach((entry, id) => {
     if (!seen.has(id)) {
-      if (entry.pc) entry.pc.close();
-      entry.card.remove();
-      cardsByDeviceId.delete(id);
-      peers.delete(id);
+      startReconnectWindow(id);
     }
   });
 
@@ -124,10 +158,8 @@ function updateDevices(list) {
 
       const meta = document.createElement("div");
       meta.className = "meta";
-
       const title = document.createElement("div");
       title.textContent = d.name;
-
       const toggle = document.createElement("button");
       toggle.className = "toggle";
       toggle.textContent = "Unmute";
@@ -137,6 +169,9 @@ function updateDevices(list) {
       talkOne.textContent = "Hold to Talk";
       bindPushToTalk(talkOne, d.id);
 
+      const viewer = document.createElement("div");
+      viewer.className = "viewer";
+
       const video = document.createElement("video");
       video.id = `video-${d.id}`;
       video.autoplay = true;
@@ -144,6 +179,11 @@ function updateDevices(list) {
       video.controls = false;
       video.muted = true;
       applyEnhancement(video);
+
+      const placeholder = document.createElement("div");
+      placeholder.className = "placeholder";
+      placeholder.innerHTML = '<div class="title">AFIT CHRISTIAN CHAPEL, KADUNA</div><div class="subtitle">Promoting the Unity of the Saints</div><div id="status"></div>';
+      const placeholderStatus = placeholder.querySelector("#status");
 
       toggle.onclick = (evt) => {
         evt.stopPropagation();
@@ -154,13 +194,18 @@ function updateDevices(list) {
 
       meta.appendChild(title);
       meta.appendChild(toggle);
+      viewer.appendChild(video);
+      viewer.appendChild(placeholder);
       card.appendChild(meta);
-      card.appendChild(video);
+      card.appendChild(viewer);
       card.appendChild(talkOne);
       grid.appendChild(card);
 
-      cardsByDeviceId.set(d.id, { card, video, pc: null });
+      cardsByDeviceId.set(d.id, { card, video, pc: null, placeholder, placeholderStatus });
     }
+
+    clearReconnectWindow(d.id);
+    hideLogoPlaceholder(cardsByDeviceId.get(d.id));
 
     const peerEntry = peers.get(d.id);
     if (!peerEntry || !peerEntry.pc || (peerEntry.pc.connectionState !== "connected" && peerEntry.pc.connectionState !== "connecting")) {
@@ -171,9 +216,7 @@ function updateDevices(list) {
 
 function setActive(id) {
   activeId = id;
-  cardsByDeviceId.forEach((entry, key) => {
-    entry.card.classList.toggle("active", key === activeId);
-  });
+  cardsByDeviceId.forEach((entry, key) => entry.card.classList.toggle("active", key === activeId));
 }
 
 function buildPeer(deviceSocketId, deviceId) {
@@ -185,6 +228,8 @@ function buildPeer(deviceSocketId, deviceId) {
     const [stream] = evt.streams;
     if (entry.video.srcObject !== stream) entry.video.srcObject = stream;
     entry.video.play().catch(() => {});
+    hideLogoPlaceholder(entry);
+    clearReconnectWindow(deviceId);
   };
 
   pc.onicecandidate = (evt) => {
@@ -193,16 +238,15 @@ function buildPeer(deviceSocketId, deviceId) {
   };
 
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "failed" || pc.connectionState === "closed") {
-      peers.delete(deviceId);
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") {
       const entry = cardsByDeviceId.get(deviceId);
-      if (entry) entry.pc = null;
-      ws.send(JSON.stringify({ type: "watch", deviceId }));
+      if (entry) showLogoPlaceholder(entry, "Reconnecting... up to 60s");
+      startReconnectWindow(deviceId);
     }
   };
 
-  const entry = peers.get(deviceId) || {};
-  peers.set(deviceId, { ...entry, pc, deviceSocketId, talkSender: entry.talkSender || null });
+  const existing = peers.get(deviceId) || {};
+  peers.set(deviceId, { ...existing, pc, deviceSocketId, talkSender: existing.talkSender || null });
   const cardEntry = cardsByDeviceId.get(deviceId);
   if (cardEntry) cardEntry.pc = pc;
   return pc;
@@ -223,7 +267,6 @@ async function handleSignal(deviceSocketId, deviceId, data) {
     await pc.setRemoteDescription({ type: "offer", sdp: data.sdp });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-
     ws.send(JSON.stringify({ type: "signal", to: deviceSocketId, deviceId, data: { type: "answer", sdp: answer.sdp } }));
     return;
   }
@@ -238,19 +281,11 @@ async function handleSignal(deviceSocketId, deviceId, data) {
   }
 }
 
-function bindTalkAllButton() {
-  bindPushToTalk(talkAllBtn, "all");
-}
+function bindTalkAllButton() { bindPushToTalk(talkAllBtn, "all"); }
 
 function bindPushToTalk(button, target) {
-  const start = async (evt) => {
-    evt.preventDefault();
-    await setTalkState(target, true, button);
-  };
-
-  const stop = async () => {
-    await setTalkState(target, false, button);
-  };
+  const start = async (evt) => { evt.preventDefault(); await setTalkState(target, true, button); };
+  const stop = async () => { await setTalkState(target, false, button); };
 
   button.addEventListener("mousedown", start);
   button.addEventListener("touchstart", start, { passive: false });
@@ -269,7 +304,6 @@ async function ensureDashboardMic() {
 async function ensureTalkSenderForDevice(deviceId) {
   const peerEntry = peers.get(deviceId);
   if (!peerEntry || !peerEntry.pc) return null;
-
   if (peerEntry.talkSender) return peerEntry.talkSender;
 
   const stream = await ensureDashboardMic();
@@ -295,11 +329,9 @@ async function setTalkState(target, enabled, button) {
     if (sender && sender.track) sender.track.enabled = enabled;
   }));
 
-  if (target === "all") {
-    button.textContent = enabled ? "Talking to All..." : "Hold to Talk to All Phones";
-  } else {
-    button.textContent = enabled ? "Talking..." : "Hold to Talk";
-  }
+  button.textContent = target === "all"
+    ? (enabled ? "Talking to All..." : "Hold to Talk to All Phones")
+    : (enabled ? "Talking..." : "Hold to Talk");
 }
 </script>
 
