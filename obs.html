@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBS Feed</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+    #feed {
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <video id="feed" autoplay playsinline muted></video>
+
+<script>
+const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+const ws = new WebSocket(`${wsProtocol}://${location.host}`);
+const video = document.getElementById("feed");
+const peers = new Map();
+let currentDeviceId = null;
+
+ws.onopen = () => ws.send(JSON.stringify({ type: "dashboard" }));
+
+ws.onmessage = async (event) => {
+  const msg = JSON.parse(event.data);
+
+  if (msg.type === "devices") {
+    if (!msg.devices || msg.devices.length === 0) {
+      currentDeviceId = null;
+      video.srcObject = null;
+      return;
+    }
+
+    const firstId = msg.devices[0].id;
+    if (currentDeviceId !== firstId) {
+      currentDeviceId = firstId;
+      ws.send(JSON.stringify({ type: "watch", deviceId: currentDeviceId }));
+    }
+    return;
+  }
+
+  if (msg.type === "signal") {
+    await handleSignal(msg.from, msg.deviceId, msg.data);
+  }
+};
+
+function buildPeer(deviceSocketId, deviceId) {
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+  pc.ontrack = (evt) => {
+    const [stream] = evt.streams;
+    if (video.srcObject !== stream) video.srcObject = stream;
+    video.play().catch(() => {});
+  };
+
+  pc.onicecandidate = (evt) => {
+    if (!evt.candidate) return;
+    ws.send(JSON.stringify({
+      type: "signal",
+      to: deviceSocketId,
+      deviceId,
+      data: { type: "candidate", candidate: evt.candidate }
+    }));
+  };
+
+  peers.set(deviceId, { pc, deviceSocketId });
+  return pc;
+}
+
+async function handleSignal(deviceSocketId, deviceId, data) {
+  if (!deviceId || deviceId !== currentDeviceId) return;
+
+  let peerEntry = peers.get(deviceId);
+  let pc = peerEntry?.pc;
+
+  if (!pc) {
+    pc = buildPeer(deviceSocketId, deviceId);
+    peerEntry = peers.get(deviceId);
+  }
+
+  if (data.type === "offer") {
+    await pc.setRemoteDescription({ type: "offer", sdp: data.sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    ws.send(JSON.stringify({
+      type: "signal",
+      to: deviceSocketId,
+      deviceId,
+      data: { type: "answer", sdp: answer.sdp }
+    }));
+    return;
+  }
+
+  if (data.type === "candidate" && data.candidate) {
+    await pc.addIceCandidate(data.candidate);
+  }
+}
+</script>
+</body>
+</html>
