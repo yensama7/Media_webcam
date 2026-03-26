@@ -4,70 +4,225 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Phone Camera</title>
   <style>
-    body { background: #111; color: white; font-family: sans-serif; text-align: center; padding-top: 20px; }
-    video { width: 100%; max-width: 500px; border-radius: 8px; background: #000; }
+    body { background: #111; color: white; font-family: sans-serif; text-align: center; padding: 16px; }
+    video { width: 100%; max-width: 560px; border-radius: 8px; background: #000; }
     #status { color: #00ff88; }
+    .small { opacity: 0.8; font-size: 0.9rem; }
+    #netBadge { position: fixed; top: 10px; right: 10px; padding: 8px 10px; border-radius: 8px; font-weight: 700; background: #444; color: #fff; font-size: 0.9rem; z-index: 9999; }
   </style>
 </head>
 <body>
-
-  <h2>Camera Status: <span id="status">Waiting...</span></h2>
+  <div id="netBadge">Link: waiting...</div>
+  <h2>Camera Status: <span id="status">Starting...</span></h2>
+  <p class="small">Open <strong>/dashboard</strong> on your laptop from the same server. No IP entry needed.</p>
   <video id="preview" autoplay playsinline muted></video>
 
 <script>
   const video = document.getElementById("preview");
   const statusEl = document.getElementById("status");
-
-  // Added a default prefix to save you some typing on the phone
-  const laptopIP = prompt("Enter laptop IP", "192.168."); 
+  const netBadgeEl = document.getElementById("netBadge");
 
   const deviceId = crypto.randomUUID();
-  const deviceName = "Phone-" + deviceId.slice(0,4);
+  const deviceName = "Phone-" + deviceId.slice(0, 4);
+  const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${wsProtocol}://${location.host}`);
 
-  const ws = new WebSocket(`ws://${laptopIP}:8080`);
+  const peers = new Map();
+  const pendingWatchers = [];
+  const talkQueue = [];
+  let isPlayingTalk = false;
+  let localStream;
+  const cameraReadyPromise = startCamera();
 
   ws.onopen = () => {
     statusEl.textContent = "Connected";
-    ws.send(JSON.stringify({
-      type: "register",
-      id: deviceId,
-      name: deviceName
-    }));
+    ws.send(JSON.stringify({ type: "register", id: deviceId, name: deviceName }));
   };
 
   ws.onerror = () => {
-    statusEl.textContent = "Server Connection Failed";
+    statusEl.textContent = "Server connection failed";
     statusEl.style.color = "red";
   };
 
-  navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment" }
-  }).then(stream => {
-    video.srcObject = stream;
+  ws.onmessage = async (event) => {
+    const msg = JSON.parse(event.data);
 
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
+    if (msg.type === "watch") {
+      pendingWatchers.push(msg.from);
+      await connectPendingWatchers();
+      return;
+    }
 
-    setInterval(() => {
-      if (ws.readyState !== 1) return;
+    if (msg.type === "signal") {
+      await handleSignal(msg.from, msg.data);
+      return;
+    }
 
-      // Ensure canvas matches video resolution before drawing
-      if (video.videoWidth > 0) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (msg.type === "talk") {
+      queueTalkAudio(msg.mimeType, msg.data);
+    }
+  };
 
-        ws.send(JSON.stringify({
-          type: "frame",
-          data: canvas.toDataURL("image/jpeg", 0.5) // 0.5 compression helps reduce lag
-        }));
+  async function startCamera() {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: {
+        facingMode: "environment",
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 },
+        frameRate: { ideal: 30, max: 30 }
       }
-    }, 100); // 10fps is a safe sweet spot for WebSockets
-  }).catch(err => {
-    statusEl.textContent = "Camera Error: " + err.message;
+    });
+
+    const [videoTrack] = localStream.getVideoTracks();
+    if (videoTrack) videoTrack.contentHint = "detail";
+
+    video.srcObject = localStream;
+    statusEl.textContent = "Camera and microphone ready";
+  }
+
+  async function connectPendingWatchers() {
+    await cameraReadyPromise;
+
+    while (pendingWatchers.length > 0) {
+      const remoteSocketId = pendingWatchers.shift();
+      await createOfferForDashboard(remoteSocketId);
+    }
+  }
+
+  function buildPeer(remoteSocketId) {
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+    localStream.getTracks().forEach((track) => {
+      const sender = pc.addTrack(track, localStream);
+      if (track.kind === "video") {
+        const params = sender.getParameters();
+        params.degradationPreference = "maintain-resolution";
+        params.encodings = [{ maxBitrate: 2500000 }];
+        sender.setParameters(params).catch(() => {});
+      }
+    });
+
+    pc.onicecandidate = (evt) => {
+      if (!evt.candidate) return;
+      ws.send(JSON.stringify({
+        type: "signal",
+        to: remoteSocketId,
+        deviceId,
+        data: { type: "candidate", candidate: evt.candidate }
+      }));
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") {
+        pc.close();
+        peers.delete(remoteSocketId);
+      }
+    };
+
+    peers.set(remoteSocketId, pc);
+    return pc;
+  }
+
+  async function createOfferForDashboard(remoteSocketId) {
+    let pc = peers.get(remoteSocketId);
+    if (!pc) pc = buildPeer(remoteSocketId);
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    ws.send(JSON.stringify({ type: "signal", to: remoteSocketId, deviceId, data: { type: "offer", sdp: offer.sdp } }));
+  }
+
+  async function handleSignal(remoteSocketId, data) {
+    await cameraReadyPromise;
+    let pc = peers.get(remoteSocketId);
+    if (!pc) pc = buildPeer(remoteSocketId);
+
+    if (data.type === "answer") {
+      await pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
+      return;
+    }
+
+    if (data.type === "candidate" && data.candidate) {
+      await pc.addIceCandidate(data.candidate);
+    }
+  }
+
+  function colorByRtt(rttMs) {
+    if (rttMs <= 120) return { label: "Good", bg: "#138a36" };
+    if (rttMs <= 250) return { label: "Medium", bg: "#b58900" };
+    return { label: "Poor", bg: "#b00020" };
+  }
+
+  async function refreshNetworkBadge() {
+    const peer = peers.values().next().value;
+    if (!peer || peer.connectionState !== "connected") {
+      netBadgeEl.textContent = "Link: waiting...";
+      netBadgeEl.style.background = "#444";
+      return;
+    }
+
+    try {
+      const stats = await peer.getStats();
+      let rttMs = null;
+
+      stats.forEach((report) => {
+        if (report.type === "candidate-pair" && report.state === "succeeded" && report.currentRoundTripTime) {
+          rttMs = Math.round(report.currentRoundTripTime * 1000);
+        }
+      });
+
+      if (rttMs === null) {
+        netBadgeEl.textContent = "Link: measuring...";
+        netBadgeEl.style.background = "#444";
+        return;
+      }
+
+      const quality = colorByRtt(rttMs);
+      netBadgeEl.textContent = `Link ${quality.label}: ${rttMs} ms`;
+      netBadgeEl.style.background = quality.bg;
+    } catch {
+      netBadgeEl.textContent = "Link: stats unavailable";
+      netBadgeEl.style.background = "#444";
+    }
+  }
+
+  function queueTalkAudio(mimeType, base64Data) {
+    talkQueue.push({ mimeType, base64Data });
+    if (!isPlayingTalk) playNextTalkAudio();
+  }
+
+  function b64ToBlob(base64Data, mimeType) {
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType || "audio/webm" });
+  }
+
+  function playNextTalkAudio() {
+    if (talkQueue.length === 0) {
+      isPlayingTalk = false;
+      return;
+    }
+
+    isPlayingTalk = true;
+    const item = talkQueue.shift();
+    const audio = new Audio(URL.createObjectURL(b64ToBlob(item.base64Data, item.mimeType)));
+    audio.onended = () => {
+      URL.revokeObjectURL(audio.src);
+      playNextTalkAudio();
+    };
+    audio.onerror = () => playNextTalkAudio();
+    audio.play().catch(() => playNextTalkAudio());
+  }
+
+  setInterval(refreshNetworkBadge, 1000);
+
+  cameraReadyPromise.catch((err) => {
+    statusEl.textContent = "Media error: " + err.message;
     statusEl.style.color = "red";
   });
 </script>
-
 </body>
 </html>
