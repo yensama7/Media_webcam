@@ -6,10 +6,10 @@ This app lets you use your phone camera + microphone and watch it live on your l
 
 ### Windows
 - Double-click `run_dashboard.bat`
-- It opens a persistent terminal window and keeps it open.
+- It always runs in a persistent CMD window and keeps it open for troubleshooting.
 - It will:
   1) check if npm exists,
-  2) try to install Node.js/npm via `winget` if missing,
+  2) install Node.js LTS (includes npm) via `winget` if missing,
   3) run `npm install`,
   4) run `npm start`.
 
