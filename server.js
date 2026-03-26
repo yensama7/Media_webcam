@@ -10,13 +10,25 @@ function sendJson(ws, payload) {
   }
 }
 
+function isLikelyLanInterface(name) {
+  const lowered = name.toLowerCase();
+  const blocked = ["docker", "veth", "br-", "virbr", "vmnet", "vbox", "tailscale", "utun", "tun", "tap"];
+  return !blocked.some((fragment) => lowered.includes(fragment));
+}
+
+function isPrivateIpv4(ip) {
+  return ip.startsWith("10.") || ip.startsWith("192.168.") || /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip);
+}
+
 function getLanIps() {
   const interfaces = os.networkInterfaces();
   const ips = [];
 
-  Object.values(interfaces).forEach((items) => {
+  Object.entries(interfaces).forEach(([name, items]) => {
+    if (!isLikelyLanInterface(name)) return;
+
     (items || []).forEach((item) => {
-      if (item.family === "IPv4" && !item.internal) {
+      if (item.family === "IPv4" && !item.internal && isPrivateIpv4(item.address)) {
         ips.push(item.address);
       }
     });
@@ -103,6 +115,19 @@ wss.on("connection", (ws) => {
           deviceId: msg.deviceId || null
         });
         return;
+      }
+
+      if (msg.type === "talk") {
+        if (msg.target === "all") {
+          devicesBySocketId.forEach((device) => {
+            const target = socketsById.get(device.socketId);
+            sendJson(target, { type: "talk", mimeType: msg.mimeType, data: msg.data });
+          });
+          return;
+        }
+
+        const target = findDeviceSocketByDeviceId(msg.target);
+        sendJson(target, { type: "talk", mimeType: msg.mimeType, data: msg.data });
       }
     } catch (error) {
       console.error("Bad message", error);

@@ -8,18 +8,7 @@
     video { width: 100%; max-width: 560px; border-radius: 8px; background: #000; }
     #status { color: #00ff88; }
     .small { opacity: 0.8; font-size: 0.9rem; }
-    #netBadge {
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      padding: 8px 10px;
-      border-radius: 8px;
-      font-weight: 700;
-      background: #444;
-      color: #fff;
-      font-size: 0.9rem;
-      z-index: 9999;
-    }
+    #netBadge { position: fixed; top: 10px; right: 10px; padding: 8px 10px; border-radius: 8px; font-weight: 700; background: #444; color: #fff; font-size: 0.9rem; z-index: 9999; }
   </style>
 </head>
 <body>
@@ -39,15 +28,15 @@
   const ws = new WebSocket(`${wsProtocol}://${location.host}`);
 
   const peers = new Map();
+  const pendingWatchers = [];
+  const talkQueue = [];
+  let isPlayingTalk = false;
   let localStream;
+  const cameraReadyPromise = startCamera();
 
   ws.onopen = () => {
     statusEl.textContent = "Connected";
-    ws.send(JSON.stringify({
-      type: "register",
-      id: deviceId,
-      name: deviceName
-    }));
+    ws.send(JSON.stringify({ type: "register", id: deviceId, name: deviceName }));
   };
 
   ws.onerror = () => {
@@ -59,45 +48,57 @@
     const msg = JSON.parse(event.data);
 
     if (msg.type === "watch") {
-      await createOfferForDashboard(msg.from);
+      pendingWatchers.push(msg.from);
+      await connectPendingWatchers();
       return;
     }
 
     if (msg.type === "signal") {
       await handleSignal(msg.from, msg.data);
+      return;
+    }
+
+    if (msg.type === "talk") {
+      queueTalkAudio(msg.mimeType, msg.data);
     }
   };
 
   async function startCamera() {
     localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      },
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: {
         facingMode: "environment",
-        width: { ideal: 1280, max: 1280 },
-        height: { ideal: 720, max: 720 },
-        frameRate: { ideal: 24, max: 30 }
+        width: { ideal: 1280, max: 1920 },
+        height: { ideal: 720, max: 1080 },
+        frameRate: { ideal: 30, max: 30 }
       }
     });
+
+    const [videoTrack] = localStream.getVideoTracks();
+    if (videoTrack) videoTrack.contentHint = "detail";
 
     video.srcObject = localStream;
     statusEl.textContent = "Camera and microphone ready";
   }
 
+  async function connectPendingWatchers() {
+    await cameraReadyPromise;
+
+    while (pendingWatchers.length > 0) {
+      const remoteSocketId = pendingWatchers.shift();
+      await createOfferForDashboard(remoteSocketId);
+    }
+  }
+
   function buildPeer(remoteSocketId) {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-    });
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
 
     localStream.getTracks().forEach((track) => {
       const sender = pc.addTrack(track, localStream);
       if (track.kind === "video") {
         const params = sender.getParameters();
-        params.degradationPreference = "balanced";
-        params.encodings = [{ maxBitrate: 1200000 }];
+        params.degradationPreference = "maintain-resolution";
+        params.encodings = [{ maxBitrate: 2500000 }];
         sender.setParameters(params).catch(() => {});
       }
     });
@@ -113,7 +114,7 @@
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") {
         pc.close();
         peers.delete(remoteSocketId);
       }
@@ -130,15 +131,11 @@
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    ws.send(JSON.stringify({
-      type: "signal",
-      to: remoteSocketId,
-      deviceId,
-      data: { type: "offer", sdp: offer.sdp }
-    }));
+    ws.send(JSON.stringify({ type: "signal", to: remoteSocketId, deviceId, data: { type: "offer", sdp: offer.sdp } }));
   }
 
   async function handleSignal(remoteSocketId, data) {
+    await cameraReadyPromise;
     let pc = peers.get(remoteSocketId);
     if (!pc) pc = buildPeer(remoteSocketId);
 
@@ -191,9 +188,38 @@
     }
   }
 
+  function queueTalkAudio(mimeType, base64Data) {
+    talkQueue.push({ mimeType, base64Data });
+    if (!isPlayingTalk) playNextTalkAudio();
+  }
+
+  function b64ToBlob(base64Data, mimeType) {
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType || "audio/webm" });
+  }
+
+  function playNextTalkAudio() {
+    if (talkQueue.length === 0) {
+      isPlayingTalk = false;
+      return;
+    }
+
+    isPlayingTalk = true;
+    const item = talkQueue.shift();
+    const audio = new Audio(URL.createObjectURL(b64ToBlob(item.base64Data, item.mimeType)));
+    audio.onended = () => {
+      URL.revokeObjectURL(audio.src);
+      playNextTalkAudio();
+    };
+    audio.onerror = () => playNextTalkAudio();
+    audio.play().catch(() => playNextTalkAudio());
+  }
+
   setInterval(refreshNetworkBadge, 1000);
 
-  startCamera().catch((err) => {
+  cameraReadyPromise.catch((err) => {
     statusEl.textContent = "Media error: " + err.message;
     statusEl.style.color = "red";
   });

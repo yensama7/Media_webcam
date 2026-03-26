@@ -19,40 +19,46 @@ Run:
 npm start
 ```
 
-After starting, open this on your laptop browser:
+Then open this on your laptop browser:
 - `http://localhost:8080/`
 
-This is the **Dashboard** page.
+## Connect your phone
+1. On dashboard, find: **"On your phone browser, open one of these links"**.
+2. Pick one shown link (for example `http://192.168.1.10:8080/phone`).
+3. Open it on your phone browser.
+4. Allow camera + microphone permissions.
 
-## Connect your phone (easy)
-1. On the dashboard page, look for the section that says:
-   - "On your phone browser, open one of these links"
-2. It shows your laptop IP link, for example:
-   - `http://192.168.1.10:8080/phone`
-3. Type that exact link in your phone browser.
-4. Allow camera and microphone permissions.
-
-Done — your phone camera should appear on the laptop dashboard.
+The feed should appear automatically on dashboard without refreshing.
 
 ## Audio
-- Every camera card starts muted.
-- Click **Unmute** on a card to hear sound.
+- Each camera card starts muted on dashboard.
+- Click **Unmute** to hear that phone.
 
-## Connection quality indicator on phone
-- On the top-right corner of the phone page, you will see live connection quality.
+## Talk back from dashboard (walkie-talkie style)
+- **Hold to Talk to All Phones**: press and hold to broadcast your laptop microphone to every phone.
+- **Hold to Talk** (inside a camera card): press and hold to talk to that phone only.
+- When you release the button, talking stops.
+
+## Phone connection quality badge
+- Top-right of phone screen shows connection quality and latency (`ms`).
 - Colors:
-  - **Green** = good
-  - **Yellow** = medium
-  - **Red** = poor
-- The number shown is round-trip latency in milliseconds (`ms`). Lower is better.
+  - Green = Good
+  - Yellow = Medium
+  - Red = Poor
+
+## Why might multiple IPs show?
+- Some laptops have extra virtual adapters (VPN, Docker, etc.).
+- The app now filters to likely private LAN IPs to reduce wrong entries.
+- If more than one still appears, use the one that opens `/phone` on your phone.
+
+## If feed is laggy
+- Keep both devices on strong Wi-Fi (5GHz if available).
+- Stay closer to the router.
+- Close heavy downloads or streaming on the same network.
+- Keep the laptop plugged in (power-save modes can add delay).
 
 ## If it doesn't connect
 - Make sure both devices are on the same Wi-Fi.
-- Make sure laptop firewall allows port `8080`.
-- Refresh both pages.
-- Restart server with `Ctrl + C` then `npm start` again.
-
-## Quick restart
-```bash
-npm start
-```
+- Allow port `8080` in laptop firewall.
+- Refresh dashboard and phone pages.
+- Restart server (`Ctrl + C`, then `npm start`).
