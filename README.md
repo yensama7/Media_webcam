@@ -52,7 +52,7 @@ The feed should appear automatically on dashboard without refreshing.
 - This enhancement is local display processing only, so it does not increase network bitrate.
 
 ## OBS integration (script)
-Use the included OBS Lua script (`obs_dashboard_source.lua`) to add the dashboard feed + audio to OBS.
+Use the included OBS Lua script (`obs_dashboard_source.lua`) to add an OBS-only clean video feed (no dashboard controls/UI).
 
 ### Steps
 1. Start this app (`run_dashboard.bat` or `run_dashboard.sh`).
@@ -60,9 +60,11 @@ Use the included OBS Lua script (`obs_dashboard_source.lua`) to add the dashboar
 3. Go to **Tools -> Scripts**.
 4. Click **+** and choose `obs_dashboard_source.lua`.
 5. In the script panel, click **Create / Update Browser Source**.
-6. OBS adds a Browser Source pointing to `http://127.0.0.1:8080/dashboard` with audio routed.
+6. OBS adds a Browser Source pointing to `http://127.0.0.1:8080/obs` (video-only clean feed).
 
 This is a lightweight OBS script approach (plugin-like behavior) without compiling a native OBS plugin.
+
+The dashboard cards are displayed in landscape (16:9) for better monitor fit.
 
 ## If feed is laggy
 - Keep both devices on strong Wi-Fi (5GHz preferred).

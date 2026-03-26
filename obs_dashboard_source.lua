@@ -1,7 +1,7 @@
 obs = obslua
 
 source_name = "Dashboard Feed"
-source_url = "http://127.0.0.1:8080/dashboard"
+source_url = "http://127.0.0.1:8080/obs"
 source_width = 1280
 source_height = 720
 
@@ -51,7 +51,7 @@ function create_or_update_source(props, property)
   obs.obs_data_set_string(settings, "url", source_url)
   obs.obs_data_set_int(settings, "width", source_width)
   obs.obs_data_set_int(settings, "height", source_height)
-  obs.obs_data_set_bool(settings, "reroute_audio", true)
+  obs.obs_data_set_bool(settings, "reroute_audio", false)
   obs.obs_data_set_bool(settings, "shutdown", true)
   obs.obs_data_set_int(settings, "fps", 30)
 

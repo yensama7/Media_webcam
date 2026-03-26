@@ -50,6 +50,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.url === "/obs") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(fs.readFileSync("obs.html"));
+    return;
+  }
+
   if (req.url === "/api/server-info") {
     const payload = {
       ips: getLanIps(),

@@ -1,12 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-REM Launch in a persistent command window when double-clicked.
-if /I "%~1" neq "keepopen" (
-  start "Media Webcam Launcher" cmd /k ""%~f0" keepopen"
-  exit /b
-)
-
 cd /d "%~dp0"
 
 echo [INFO] Starting Media_webcam launcher...
