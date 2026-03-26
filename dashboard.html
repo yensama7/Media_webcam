@@ -4,70 +4,194 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Camera Dashboard</title>
 <style>
-body { background:#111; color:white; font-family:sans-serif; }
-#grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; padding:10px; }
-.card { background:#222; border-radius:10px; padding:8px; }
-.card img { width:100%; border-radius:6px; }
+body { background:#111; color:white; font-family:sans-serif; margin: 0; }
+h2 { padding:10px; margin: 0; }
+#info { padding: 0 10px 10px; color: #ddd; }
+.ipBox { background: #1d1d1d; border-radius: 8px; padding: 8px; margin-top: 6px; }
+.ip { font-family: monospace; color: #00ff88; margin-right: 10px; }
+#grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; padding:10px; }
+.card { background:#222; border-radius:10px; padding:8px; display: flex; flex-direction: column; gap: 8px; }
+.card video { width:100%; border-radius:6px; background: #000; }
 .card.active { outline:3px solid #00ff88; }
+.card .meta { display:flex; justify-content:space-between; align-items:center; font-size:0.95rem; }
+button { border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+.toggle { background: #0b7; color: #fff; }
 </style>
 </head>
 <body>
 
-<h2 style="padding:10px;">Camera Dashboard</h2>
+<h2>Camera Dashboard</h2>
+<div id="info">
+  On your phone browser, open one of these links:
+  <div id="ipList" class="ipBox">Loading laptop IP...</div>
+</div>
 <div id="grid"></div>
 
 <script>
-const laptopIP = prompt("Enter laptop IP");
-const ws = new WebSocket(`ws://${laptopIP}:8080`);
+const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+const httpProtocol = location.protocol === "https:" ? "https" : "http";
+const ws = new WebSocket(`${wsProtocol}://${location.host}`);
 
 const grid = document.getElementById("grid");
+const ipListEl = document.getElementById("ipList");
 
-let devices = {};
+const peers = new Map();
+const cardsByDeviceId = new Map();
 let activeId = null;
 
 ws.onopen = () => {
   ws.send(JSON.stringify({ type: "dashboard" }));
 };
 
-ws.onmessage = (event) => {
+ws.onmessage = async (event) => {
   const msg = JSON.parse(event.data);
 
-  // 📋 device list
   if (msg.type === "devices") {
     updateDevices(msg.devices);
+    return;
   }
 
-  // 🎥 incoming frame
-  if (msg.type === "frame") {
-    const img = document.getElementById("img-" + msg.id);
-    if (img) img.src = msg.data;
+  if (msg.type === "signal") {
+    await handleSignal(msg.from, msg.deviceId, msg.data);
   }
 };
 
-function updateDevices(list) {
-  grid.innerHTML = "";
-  devices = {};
+loadServerInfo();
 
-  list.forEach(d => {
+async function loadServerInfo() {
+  try {
+    const resp = await fetch("/api/server-info");
+    const info = await resp.json();
+
+    if (!info.ips || info.ips.length === 0) {
+      ipListEl.textContent = "Could not detect LAN IP automatically. Use your laptop IP + :8080/phone";
+      return;
+    }
+
+    ipListEl.innerHTML = info.ips
+      .map((ip) => `<span class=\"ip\">${httpProtocol}://${ip}:${info.port}/phone</span>`)
+      .join("<br>");
+  } catch {
+    ipListEl.textContent = "Could not load server IP list. Please refresh.";
+  }
+}
+
+function updateDevices(list) {
+  const seen = new Set(list.map((d) => d.id));
+
+  cardsByDeviceId.forEach((entry, id) => {
+    if (!seen.has(id)) {
+      if (entry.pc) entry.pc.close();
+      entry.card.remove();
+      cardsByDeviceId.delete(id);
+      peers.delete(id);
+    }
+  });
+
+  list.forEach((d) => {
+    if (cardsByDeviceId.has(d.id)) return;
+
     const card = document.createElement("div");
     card.className = "card";
     card.onclick = () => setActive(d.id);
 
-    card.innerHTML = `
-      <div>${d.name}</div>
-      <img id="img-${d.id}" />
-    `;
+    const meta = document.createElement("div");
+    meta.className = "meta";
 
+    const title = document.createElement("div");
+    title.textContent = d.name;
+
+    const toggle = document.createElement("button");
+    toggle.className = "toggle";
+    toggle.textContent = "Unmute";
+
+    const video = document.createElement("video");
+    video.id = `video-${d.id}`;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.controls = true;
+    video.muted = true;
+
+    toggle.onclick = (evt) => {
+      evt.stopPropagation();
+      const shouldUnmute = video.muted;
+      video.muted = !shouldUnmute;
+      toggle.textContent = shouldUnmute ? "Mute" : "Unmute";
+    };
+
+    meta.appendChild(title);
+    meta.appendChild(toggle);
+    card.appendChild(meta);
+    card.appendChild(video);
     grid.appendChild(card);
-    devices[d.id] = card;
+
+    cardsByDeviceId.set(d.id, { card, video, pc: null });
+    ws.send(JSON.stringify({ type: "watch", deviceId: d.id }));
   });
 }
 
 function setActive(id) {
   activeId = id;
+  cardsByDeviceId.forEach((entry, key) => {
+    entry.card.classList.toggle("active", key === activeId);
+  });
+}
 
-  Object.values(devices).forEach(c => c.classList.remove("active"));
-  if (devices[id]) devices[id].classList.add("active");
+function buildPeer(deviceSocketId, deviceId) {
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+  });
+
+  pc.ontrack = (evt) => {
+    const entry = cardsByDeviceId.get(deviceId);
+    if (!entry) return;
+    entry.video.srcObject = evt.streams[0];
+  };
+
+  pc.onicecandidate = (evt) => {
+    if (!evt.candidate) return;
+    ws.send(JSON.stringify({
+      type: "signal",
+      to: deviceSocketId,
+      deviceId,
+      data: { type: "candidate", candidate: evt.candidate }
+    }));
+  };
+
+  const entry = cardsByDeviceId.get(deviceId);
+  if (entry) entry.pc = pc;
+  peers.set(deviceId, { pc, deviceSocketId });
+  return pc;
+}
+
+async function handleSignal(deviceSocketId, deviceId, data) {
+  if (!deviceId) return;
+
+  let peerEntry = peers.get(deviceId);
+  let pc = peerEntry?.pc;
+
+  if (!pc) {
+    pc = buildPeer(deviceSocketId, deviceId);
+    peerEntry = peers.get(deviceId);
+  }
+
+  if (data.type === "offer") {
+    await pc.setRemoteDescription({ type: "offer", sdp: data.sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    ws.send(JSON.stringify({
+      type: "signal",
+      to: deviceSocketId,
+      deviceId,
+      data: { type: "answer", sdp: answer.sdp }
+    }));
+    return;
+  }
+
+  if (data.type === "candidate" && data.candidate) {
+    await pc.addIceCandidate(data.candidate);
+  }
 }
 </script>
 
