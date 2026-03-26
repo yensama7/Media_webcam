@@ -35,6 +35,17 @@
   const cameraReadyPromise = startCamera();
 
   connectWebSocket();
+  lockLandscapeIfPossible();
+
+  async function lockLandscapeIfPossible() {
+    try {
+      if (screen.orientation && screen.orientation.lock) {
+        await screen.orientation.lock("landscape");
+      }
+    } catch (_) {
+      // ignored on browsers that require full-screen/user gesture
+    }
+  }
 
   function connectWebSocket() {
     ws = new WebSocket(`${wsProtocol}://${location.host}`);

@@ -13,7 +13,8 @@ h2 { padding:10px; margin: 0; }
 #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:10px; padding:10px; }
 .card { background:#222; border-radius:10px; padding:8px; display: flex; flex-direction: column; gap: 8px; }
 .viewer { width: 100%; aspect-ratio: 16 / 9; border-radius:6px; background: #000; position: relative; overflow: hidden; }
-.viewer video { width:100%; height:100%; object-fit: cover; }
+.viewer video { width:100%; height:100%; object-fit: cover; transform-origin: center center; }
+.viewer video.rotated-landscape { transform: rotate(90deg) scale(1.78); }
 .viewer video.enhanced { filter: contrast(1.08) saturate(1.1) brightness(1.03); }
 .placeholder {
   position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
@@ -219,6 +220,12 @@ function setActive(id) {
   cardsByDeviceId.forEach((entry, key) => entry.card.classList.toggle("active", key === activeId));
 }
 
+function updateLandscapeClass(videoEl) {
+  if (!videoEl.videoWidth || !videoEl.videoHeight) return;
+  const isPortraitFeed = videoEl.videoHeight > videoEl.videoWidth;
+  videoEl.classList.toggle("rotated-landscape", isPortraitFeed);
+}
+
 function buildPeer(deviceSocketId, deviceId) {
   const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
 
@@ -228,6 +235,8 @@ function buildPeer(deviceSocketId, deviceId) {
     const [stream] = evt.streams;
     if (entry.video.srcObject !== stream) entry.video.srcObject = stream;
     entry.video.play().catch(() => {});
+    updateLandscapeClass(entry.video);
+    entry.video.onloadedmetadata = () => updateLandscapeClass(entry.video);
     hideLogoPlaceholder(entry);
     clearReconnectWindow(deviceId);
   };
