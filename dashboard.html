@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera Dashboard</title>
+<style>
+body { background:#111; color:white; font-family:sans-serif; }
+#grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; padding:10px; }
+.card { background:#222; border-radius:10px; padding:8px; }
+.card img { width:100%; border-radius:6px; }
+.card.active { outline:3px solid #00ff88; }
+</style>
+</head>
+<body>
+
+<h2 style="padding:10px;">Camera Dashboard</h2>
+<div id="grid"></div>
+
+<script>
+const laptopIP = prompt("Enter laptop IP");
+const ws = new WebSocket(`ws://${laptopIP}:8080`);
+
+const grid = document.getElementById("grid");
+
+let devices = {};
+let activeId = null;
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({ type: "dashboard" }));
+};
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+
+  // 📋 device list
+  if (msg.type === "devices") {
+    updateDevices(msg.devices);
+  }
+
+  // 🎥 incoming frame
+  if (msg.type === "frame") {
+    const img = document.getElementById("img-" + msg.id);
+    if (img) img.src = msg.data;
+  }
+};
+
+function updateDevices(list) {
+  grid.innerHTML = "";
+  devices = {};
+
+  list.forEach(d => {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.onclick = () => setActive(d.id);
+
+    card.innerHTML = `
+      <div>${d.name}</div>
+      <img id="img-${d.id}" />
+    `;
+
+    grid.appendChild(card);
+    devices[d.id] = card;
+  });
+}
+
+function setActive(id) {
+  activeId = id;
+
+  Object.values(devices).forEach(c => c.classList.remove("active"));
+  if (devices[id]) devices[id].classList.add("active");
+}
+</script>
+
+</body>
+</html>
