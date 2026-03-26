@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 1. Set the working directory to the script's location
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
@@ -14,50 +15,65 @@ pause_before_exit() {
 trap pause_before_exit EXIT
 
 echo "[INFO] Starting Media_webcam launcher..."
+echo "[STEP 1] Checking if npm is installed..."
 
 auto_install_node() {
+  echo "[WARN] npm is not installed."
+  echo "[STEP 2] Attempting to auto-install Node.js and npm..."
+
+  local INSTALLED=0
+
   if command -v apt-get >/dev/null 2>&1; then
     echo "[INFO] Installing Node.js + npm using apt-get..."
     sudo apt-get update
     sudo apt-get install -y nodejs npm
-    return
-  fi
-
-  if command -v dnf >/dev/null 2>&1; then
+    INSTALLED=1
+  elif command -v dnf >/dev/null 2>&1; then
     echo "[INFO] Installing Node.js + npm using dnf..."
     sudo dnf install -y nodejs npm
-    return
-  fi
-
-  if command -v pacman >/dev/null 2>&1; then
+    INSTALLED=1
+  elif command -v pacman >/dev/null 2>&1; then
     echo "[INFO] Installing Node.js + npm using pacman..."
     sudo pacman -Sy --noconfirm nodejs npm
-    return
-  fi
-
-  if command -v brew >/dev/null 2>&1; then
+    INSTALLED=1
+  elif command -v brew >/dev/null 2>&1; then
     echo "[INFO] Installing Node.js (includes npm) using Homebrew..."
     brew install node
-    return
+    INSTALLED=1
+  else
+    echo "[ERROR] No supported package manager found."
+    echo "[ERROR] Please install Node.js LTS manually from https://nodejs.org and run this script again."
+    exit 1
   fi
 
-  echo "[ERROR] No supported package manager found."
-  echo "[ERROR] Please install Node.js LTS from https://nodejs.org and run this script again."
-  exit 1
+  # THE RESTART LOGIC
+  if [ $INSTALLED -eq 1 ]; then
+    echo "[SUCCESS] Installation complete."
+    echo "[INFO] Restarting script to refresh environment variables..."
+    
+    # Clear the command hash cache just to be safe
+    hash -r 2>/dev/null || true
+    
+    # This command replaces the current script process with a fresh run of this exact file
+    exec "$0" "$@"
+  fi
 }
 
-echo "[INFO] Checking if npm is installed..."
+# 2. Check for npm. If missing, run the installer.
 if ! command -v npm >/dev/null 2>&1; then
-  echo "[WARN] npm is not installed."
   auto_install_node
+else
+  echo "[SUCCESS] npm is already installed! Skipping installation."
 fi
 
+# 3. RUN APP SECTION
+echo ""
 echo "[INFO] Node version: $(node -v 2>/dev/null || echo 'not found')"
-echo "[INFO] npm version: $(npm -v)"
+echo "[INFO] npm version: $(npm -v 2>/dev/null || echo 'not found')"
 
-echo "[INFO] Installing project dependencies..."
+echo "[INFO] Checking project dependencies..."
 npm install
 
-echo "[INFO] Starting project server..."
-echo "[INFO] Keep this window open. It will show dashboard and phone links."
+echo "[STEP 3] Starting project server..."
+echo "[INFO] Keep this window open. It will show your dashboard and phone links."
 npm start
