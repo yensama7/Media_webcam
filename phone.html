@@ -22,7 +22,9 @@
   const statusEl = document.getElementById("status");
   const netBadgeEl = document.getElementById("netBadge");
 
-  const deviceId = crypto.randomUUID();
+  const savedDeviceId = localStorage.getItem("afit_phone_id");
+  const deviceId = savedDeviceId || crypto.randomUUID();
+  localStorage.setItem("afit_phone_id", deviceId);
   const deviceName = "Phone-" + deviceId.slice(0, 4);
   const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
 
@@ -106,7 +108,7 @@
     });
 
     const [videoTrack] = localStream.getVideoTracks();
-    if (videoTrack) videoTrack.contentHint = "motion";
+    if (videoTrack) videoTrack.contentHint = "detail";
 
     video.srcObject = localStream;
     statusEl.textContent = "Camera and microphone ready";
@@ -129,7 +131,7 @@
       if (track.kind === "video") {
         const params = sender.getParameters();
         params.degradationPreference = "balanced";
-        params.encodings = [{ maxBitrate: 1200000, maxFramerate: 24 }];
+        params.encodings = [{ maxBitrate: 2500000, maxFramerate: 30 }];
         sender.setParameters(params).catch(() => {});
       }
     });

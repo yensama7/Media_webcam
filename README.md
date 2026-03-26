@@ -42,6 +42,7 @@ Then open dashboard on laptop:
 4. Allow camera + microphone permissions.
 
 The feed should appear automatically on dashboard without refreshing.
+- The phone page keeps a stable device ID in browser storage, so reloading the same phone tab will reconnect as the same device card.
 
 
 ## Connection limits and reconnect behavior
