@@ -56,6 +56,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.url === "/api/devices") {
+    const list = Array.from(devicesBySocketId.values()).map((device) => ({
+      id: device.deviceId,
+      name: device.name
+    }));
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ devices: list }));
+    return;
+  }
+
   if (req.url === "/api/server-info") {
     const payload = {
       ips: getLanIps(),

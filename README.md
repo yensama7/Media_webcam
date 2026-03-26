@@ -38,7 +38,8 @@ Then open dashboard on laptop:
 ## Connect your phone
 1. On dashboard, copy one of the shown phone links.
 2. Open that link on your phone browser.
-3. Allow camera + microphone permissions.
+3. Hold the phone in landscape while filming.
+4. Allow camera + microphone permissions.
 
 The feed should appear automatically on dashboard without refreshing.
 
@@ -50,6 +51,7 @@ The feed should appear automatically on dashboard without refreshing.
 ## Dashboard enhancement
 - Leave **Enhance dashboard video (local only)** enabled for slightly better-looking video.
 - This enhancement is local display processing only, so it does not increase network bitrate.
+- Dashboard cards are shown in landscape (16:9), similar to Iriun framing.
 
 ## OBS integration (script)
 Use the included OBS Lua script (`obs_dashboard_source.lua`) to add an OBS-only clean video feed (no dashboard controls/UI).
@@ -59,12 +61,13 @@ Use the included OBS Lua script (`obs_dashboard_source.lua`) to add an OBS-only 
 2. Open OBS.
 3. Go to **Tools -> Scripts**.
 4. Click **+** and choose `obs_dashboard_source.lua`.
-5. In the script panel, click **Create / Update Browser Source**.
-6. OBS adds a Browser Source pointing to `http://127.0.0.1:8080/obs` (video-only clean feed).
+5. Configure:
+   - `Device index` (0 = first phone, 1 = second, etc.)
+   - `Auto-cycle devices` (on/off)
+   - `Cycle interval (ms)` if auto-cycle is on
+6. Click **Create / Update Browser Source**.
 
-This is a lightweight OBS script approach (plugin-like behavior) without compiling a native OBS plugin.
-
-The dashboard cards are displayed in landscape (16:9) for better monitor fit.
+OBS uses `http://127.0.0.1:8080/obs` with query params for index/cycling.
 
 ## If feed is laggy
 - Keep both devices on strong Wi-Fi (5GHz preferred).
