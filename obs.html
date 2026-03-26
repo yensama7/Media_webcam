@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBS Feed</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+    #feed { width: 100vw; height: 100vh; object-fit: contain; background: #000; }
+    #label {
+      position: fixed;
+      left: 12px;
+      bottom: 12px;
+      color: #fff;
+      font-family: sans-serif;
+      font-size: 14px;
+      background: rgba(0,0,0,.45);
+      padding: 6px 8px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <video id="feed" autoplay playsinline muted></video>
+  <div id="label">Waiting for device...</div>
+
+<script>
+const wsProtocol = location.protocol === "https:" ? "wss" : "ws";
+const ws = new WebSocket(`${wsProtocol}://${location.host}`);
+const video = document.getElementById("feed");
+const label = document.getElementById("label");
+
+const params = new URLSearchParams(location.search);
+let selectedIndex = Number(params.get("index") || 0);
+const autoCycle = params.get("cycle") === "1";
+const cycleMs = Number(params.get("cycleMs") || 10000);
+
+const peers = new Map();
+let devices = [];
+let currentDeviceId = null;
+let cycleTimer = null;
+
+ws.onopen = () => ws.send(JSON.stringify({ type: "dashboard" }));
+
+ws.onmessage = async (event) => {
+  const msg = JSON.parse(event.data);
+
+  if (msg.type === "devices") {
+    devices = msg.devices || [];
+    pickDeviceByIndex();
+    ensureCycle();
+    return;
+  }
+
+  if (msg.type === "signal") {
+    await handleSignal(msg.from, msg.deviceId, msg.data);
+  }
+};
+
+function ensureCycle() {
+  if (!autoCycle) return;
+  if (cycleTimer) return;
+
+  cycleTimer = setInterval(() => {
+    if (devices.length === 0) return;
+    selectedIndex = (selectedIndex + 1) % devices.length;
+    pickDeviceByIndex();
+  }, cycleMs);
+}
+
+function pickDeviceByIndex() {
+  if (devices.length === 0) {
+    currentDeviceId = null;
+    video.srcObject = null;
+    label.textContent = "Waiting for device...";
+    return;
+  }
+
+  const safeIndex = Math.max(0, Math.min(selectedIndex, devices.length - 1));
+  const nextDevice = devices[safeIndex];
+
+  label.textContent = `OBS Device: ${nextDevice.name} (${safeIndex + 1}/${devices.length})`;
+
+  if (currentDeviceId === nextDevice.id) return;
+
+  if (currentDeviceId && peers.has(currentDeviceId)) {
+    peers.get(currentDeviceId).pc.close();
+    peers.delete(currentDeviceId);
+  }
+
+  currentDeviceId = nextDevice.id;
+  ws.send(JSON.stringify({ type: "watch", deviceId: currentDeviceId }));
+}
+
+function buildPeer(deviceSocketId, deviceId) {
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+  pc.ontrack = (evt) => {
+    const [stream] = evt.streams;
+    if (video.srcObject !== stream) video.srcObject = stream;
+    video.play().catch(() => {});
+  };
+
+  pc.onicecandidate = (evt) => {
+    if (!evt.candidate) return;
+    ws.send(JSON.stringify({
+      type: "signal",
+      to: deviceSocketId,
+      deviceId,
+      data: { type: "candidate", candidate: evt.candidate }
+    }));
+  };
+
+  peers.set(deviceId, { pc, deviceSocketId });
+  return pc;
+}
+
+async function handleSignal(deviceSocketId, deviceId, data) {
+  if (!deviceId || deviceId !== currentDeviceId) return;
+
+  let peerEntry = peers.get(deviceId);
+  let pc = peerEntry?.pc;
+
+  if (!pc) {
+    pc = buildPeer(deviceSocketId, deviceId);
+    peerEntry = peers.get(deviceId);
+  }
+
+  if (data.type === "offer") {
+    await pc.setRemoteDescription({ type: "offer", sdp: data.sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    ws.send(JSON.stringify({
+      type: "signal",
+      to: deviceSocketId,
+      deviceId,
+      data: { type: "answer", sdp: answer.sdp }
+    }));
+    return;
+  }
+
+  if (data.type === "candidate" && data.candidate) {
+    await pc.addIceCandidate(data.candidate);
+  }
+}
+</script>
+</body>
+</html>
